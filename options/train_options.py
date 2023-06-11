@@ -138,6 +138,9 @@ class TrainOptions(BaseOptions):
         parser.add_argument(
             "--netD", type=str, default="multiscale", help="(n_layers|multiscale|image)"
         )
+        parser.add_argument(
+            "--label_mix", action="store_true", help="if specified, use LabelMix"
+        )
         parser.add_argument("--lambda_kld", type=float, default=0.05)
         self.isTrain = True
         return parser

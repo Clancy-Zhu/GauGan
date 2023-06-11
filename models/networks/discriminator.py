@@ -50,23 +50,23 @@ class MultiscaleDiscriminator(BaseNetwork):
         self.sequential_decoder = nn.Sequential()
 
         for i in range(opt.num_res_blocks):
-            subnetD = self.NLayerDiscriminator(
+            subnetD = NLayerDiscriminator(
                 self.channles[i], self.channles[i + 1], opt, -1, first=(i == 0)
             )
             self.sequential_encoder.add_module("discriminator_encoder_%d" % i, subnetD)
-        subnetD = self.NLayerDiscriminator(self.channles[-1], self.channles[-2], opt, 1)
+        subnetD = NLayerDiscriminator(self.channles[-1], self.channles[-2], opt, 1)
         self.sequential_decoder.add_module("discriminator_decoder_0", subnetD)
         for i in range(1, opt.num_res_blocks - 1):
-            subnetD = self.NLayerDiscriminator(
+            subnetD = NLayerDiscriminator(
                 2 * self.channles[-i - 1], self.channles[-i - 2], opt, 1
             )
             self.sequential_decoder.add_module("discriminator_decoder_%d" % i, subnetD)
-        subnetD = self.NLayerDiscriminator(2 * self.channles[1], 64, opt, 1)
+        subnetD = NLayerDiscriminator(2 * self.channles[1], 64, opt, 1)
         self.sequential_decoder.add_module(
             "discriminator_decoder_%d" % (opt.num_res_blocks - 1), subnetD
         )
         self.layer_last = nn.Conv2d(
-            64, output_channel, kernel_size=1, stride=1, padding=0, bias_attr=False
+            64, output_channel, kernel_size=1, stride=1, padding=0
         )
 
     def downsample(self, input):
@@ -86,7 +86,8 @@ class MultiscaleDiscriminator(BaseNetwork):
             x = self.sequential_encoder[i](x)
             encoder_res.append(x)
         # decoder
-        for i in range(len(self.sequential_decoder)):
+        x = self.sequential_decoder[0](x)
+        for i in range(1, len(self.sequential_decoder)):
             x = self.sequential_decoder[i](jt.concat([encoder_res[-i - 1], x], dim=1))
         # last layer
         ans = self.layer_last(x)
@@ -110,7 +111,7 @@ class NLayerDiscriminator(BaseNetwork):
         self.up_or_down = up_or_down
         self.first = first
         self.learned_shortcut = fin != fout
-        fmiddle = fin, fout
+        fmiddle = fout
 
         self.conv1 = nn.Sequential()
         if first:
@@ -122,7 +123,7 @@ class NLayerDiscriminator(BaseNetwork):
             if self.up_or_down == 1:
                 self.conv1.add_module(
                     "leakyrelu1",
-                    nn.LeakyReLU(0.2, False),
+                    nn.LeakyReLU(0.2),
                 )
                 self.conv1.add_module(
                     "upsample1",
@@ -137,7 +138,7 @@ class NLayerDiscriminator(BaseNetwork):
             else:
                 self.conv1.add_module(
                     "leakyrelu1",
-                    nn.LeakyReLU(0.2, False),
+                    nn.LeakyReLU(0.2),
                 )
                 self.conv1.add_module(
                     "conv1",
@@ -148,7 +149,7 @@ class NLayerDiscriminator(BaseNetwork):
         self.conv2 = nn.Sequential()
         self.conv2.add_module(
             "leakyrelu2",
-            nn.LeakyReLU(0.2, False),
+            nn.LeakyReLU(0.2),
         )
         self.conv2.add_module(
             "conv2",

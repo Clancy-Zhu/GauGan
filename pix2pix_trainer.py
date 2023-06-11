@@ -6,7 +6,7 @@ Licensed under the CC BY-NC-SA 4.0 license (https://creativecommons.org/licenses
 from models.pix2pix_model import Pix2PixModel
 
 
-class Pix2PixTrainer():
+class Pix2PixTrainer:
     """
     Trainer creates the model and optimizers, and uses them to
     updates the weights of the network while reporting losses
@@ -20,13 +20,15 @@ class Pix2PixTrainer():
 
         self.generated = None
         if opt.isTrain:
-            self.optimizer_G, self.optimizer_D = self.pix2pix_model_on_one_gpu.create_optimizers(
-                opt)
+            (
+                self.optimizer_G,
+                self.optimizer_D,
+            ) = self.pix2pix_model_on_one_gpu.create_optimizers(opt)
             self.old_lr = opt.lr
 
     def run_generator_one_step(self, data):
         self.optimizer_G.zero_grad()
-        g_losses, generated = self.pix2pix_model(data, mode='generator')
+        g_losses, generated = self.pix2pix_model(data, mode="generator")
         g_loss = sum(g_losses.values()).mean()
         self.optimizer_G.backward(g_loss)
         self.optimizer_G.step()
@@ -35,7 +37,7 @@ class Pix2PixTrainer():
 
     def run_discriminator_one_step(self, data):
         self.optimizer_D.zero_grad()
-        d_losses = self.pix2pix_model(data, mode='discriminator')
+        d_losses = self.pix2pix_model(data, mode="discriminator")
         d_loss = sum(d_losses.values()).mean()
         self.optimizer_D.backward(d_loss)
         self.optimizer_D.step()
@@ -73,8 +75,8 @@ class Pix2PixTrainer():
                 new_lr_D = new_lr * 2
 
             for param_group in self.optimizer_D.param_groups:
-                param_group['lr'] = new_lr_D
+                param_group["lr"] = new_lr_D
             for param_group in self.optimizer_G.param_groups:
-                param_group['lr'] = new_lr_G
-            print('update learning rate: %f -> %f' % (self.old_lr, new_lr))
+                param_group["lr"] = new_lr_G
+            print("update learning rate: %f -> %f" % (self.old_lr, new_lr))
             self.old_lr = new_lr

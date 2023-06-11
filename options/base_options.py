@@ -38,7 +38,13 @@ class BaseOptions:
             help="models are saved here",
         )
         parser.add_argument(
-            "--model", type=str, default="oasis", help="which model to use"
+            "--model", type=str, default="pix2pix", help="which model to use"
+        )
+        parser.add_argument(
+            "--num_res_blocks",
+            type=int,
+            default=6,
+            help="number of residual blocks in G and D",
         )
         parser.add_argument(
             "--norm_G",
