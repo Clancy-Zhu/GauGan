@@ -8,22 +8,33 @@ from jittor import init
 from jittor import nn
 import numpy as np
 from models.networks.base_network import BaseNetwork
-from models.networks.normalization import get_nonspade_norm_layer
+from models.networks.normalization import get_nonoasis_norm_layer
+
 import util.util as util
 
 
+# OASIS Discriminator
 class MultiscaleDiscriminator(BaseNetwork):
     @staticmethod
     def modify_commandline_options(parser, is_train):
-        parser.add_argument('--netD_subarch', type=str, default='n_layer',
-                            help='architecture of each discriminator')
-        parser.add_argument('--num_D', type=int, default=2,
-                            help='number of discriminators to be used in multiscale')
+        parser.add_argument(
+            "--netD_subarch",
+            type=str,
+            default="n_layer",
+            help="architecture of each discriminator",
+        )
+        parser.add_argument(
+            "--num_D",
+            type=int,
+            default=2,
+            help="number of discriminators to be used in multiscale",
+        )
         opt, _ = parser.parse_known_args()
 
         # define properties of each discriminator of the multiscale discriminator
-        subnetD = util.find_class_in_module(opt.netD_subarch + 'discriminator',
-                                            'models.networks.discriminator')
+        subnetD = util.find_class_in_module(
+            opt.netD_subarch + "discriminator", "models.networks.discriminator"
+        )
         subnetD.modify_commandline_options(parser, is_train)
 
         return parser
@@ -32,97 +43,150 @@ class MultiscaleDiscriminator(BaseNetwork):
         super().__init__()
         self.opt = opt
 
-        self.sequential = nn.Sequential()
-        for i in range(opt.num_D):
-            subnetD = self.create_single_discriminator(opt)
-            self.sequential.add_module('discriminator_%d' % i, subnetD)
+        output_channel = opt.semantic_nc + 1
+        self.channles = [3, 128, 128, 256, 256, 512, 512]
 
-    def create_single_discriminator(self, opt):
-        subarch = opt.netD_subarch
-        if subarch == 'n_layer':
-            netD = NLayerDiscriminator(opt)
-        else:
-            raise ValueError(
-                'unrecognized discriminator subarchitecture %s' % subarch)
-        return netD
+        self.sequential_encoder = nn.Sequential()
+        self.sequential_decoder = nn.Sequential()
+
+        for i in range(opt.num_res_blocks):
+            subnetD = self.NLayerDiscriminator(
+                self.channles[i], self.channles[i + 1], opt, -1, first=(i == 0)
+            )
+            self.sequential_encoder.add_module("discriminator_encoder_%d" % i, subnetD)
+        subnetD = self.NLayerDiscriminator(self.channles[-1], self.channles[-2], opt, 1)
+        self.sequential_decoder.add_module("discriminator_decoder_0", subnetD)
+        for i in range(1, opt.num_res_blocks - 1):
+            subnetD = self.NLayerDiscriminator(
+                2 * self.channles[-i - 1], self.channles[-i - 2], opt, 1
+            )
+            self.sequential_decoder.add_module("discriminator_decoder_%d" % i, subnetD)
+        subnetD = self.NLayerDiscriminator(2 * self.channles[1], 64, opt, 1)
+        self.sequential_decoder.add_module(
+            "discriminator_decoder_%d" % (opt.num_res_blocks - 1), subnetD
+        )
+        self.layer_last = nn.Conv2d(
+            64, output_channel, kernel_size=1, stride=1, padding=0, bias_attr=False
+        )
 
     def downsample(self, input):
         # import ipdb
         # ipdb.set_trace()
-        return nn.avg_pool2d(input, kernel_size=3,
-                             stride=2, padding=1,
-                             count_include_pad=False)
+        return nn.avg_pool2d(
+            input, kernel_size=3, stride=2, padding=1, count_include_pad=False
+        )
 
     # Returns list of lists of discriminator outputs.
     # The final result is of size opt.num_D x opt.n_layers_D
     def execute(self, input):
-        result = []
-        get_intermediate_features = not self.opt.no_ganFeat_loss
-        for name, D in self.sequential.items():
-            out = D(input)
-            if not get_intermediate_features:
-                out = [out]
-            result.append(out)
-            input = self.downsample(input)
-
-        return result
+        x = input
+        # encoder
+        encoder_res = []
+        for i in range(len(self.sequential_encoder)):
+            x = self.sequential_encoder[i](x)
+            encoder_res.append(x)
+        # decoder
+        for i in range(len(self.sequential_decoder)):
+            x = self.sequential_decoder[i](jt.concat([encoder_res[-i - 1], x], dim=1))
+        # last layer
+        ans = self.layer_last(x)
+        return ans
 
 
 # Defines the PatchGAN discriminator with the specified arguments.
 class NLayerDiscriminator(BaseNetwork):
     @staticmethod
     def modify_commandline_options(parser, is_train):
-        parser.add_argument('--n_layers_D', type=int, default=4,
-                            help='# layers in each discriminator')
+        parser.add_argument(
+            "--n_layers_D", type=int, default=4, help="# layers in each discriminator"
+        )
         return parser
 
-    def __init__(self, opt):
+    def __init__(self, fin, fout, opt, up_or_down, first=False):
         super().__init__()
         self.opt = opt
+        norm_layer = get_nonoasis_norm_layer(opt, opt.norm_E)
 
-        kw = 4
-        padw = int(np.ceil((kw - 1.0) / 2))
-        nf = opt.ndf
-        input_nc = self.compute_D_input_nc(opt)
+        self.up_or_down = up_or_down
+        self.first = first
+        self.learned_shortcut = fin != fout
+        fmiddle = fin, fout
 
-        norm_layer = get_nonspade_norm_layer(opt, opt.norm_D)
-        sequence = [[nn.Conv2d(input_nc, nf, kernel_size=kw, stride=2, padding=padw),
-                     nn.LeakyReLU(0.2)]]
-
-        for n in range(1, opt.n_layers_D):
-            nf_prev = nf
-            nf = min(nf * 2, 512)
-            stride = 1 if n == opt.n_layers_D - 1 else 2
-            sequence += [[norm_layer(nn.Conv2d(nf_prev, nf, kernel_size=kw,
-                                               stride=stride, padding=padw)),
-                          nn.LeakyReLU(0.2)
-                          ]]
-
-        sequence += [[nn.Conv2d(nf, 1, kernel_size=kw,
-                                stride=1, padding=padw)]]
-
-        self.sequential = nn.Sequential()
-        # We divide the layers into groups to extract intermediate layer outputs
-        for n in range(len(sequence)):
-            self.sequential.add_module(
-                'model' + str(n), nn.Sequential(*sequence[n]))
-
-    def compute_D_input_nc(self, opt):
-        input_nc = opt.label_nc + opt.output_nc
-        if opt.contain_dontcare_label:
-            input_nc += 1
-        if not opt.no_instance:
-            input_nc += 1
-        return input_nc
-
-    def execute(self, input):
-        results = [input]
-        for _, submodel in self.sequential.items():
-            intermediate_output = submodel(results[-1])
-            results.append(intermediate_output)
-
-        get_intermediate_features = not self.opt.no_ganFeat_loss
-        if get_intermediate_features:
-            return results[1:]
+        self.conv1 = nn.Sequential()
+        if first:
+            self.conv1.add_module(
+                "conv1",
+                norm_layer(nn.Conv2d(fin, fmiddle, kernel_size=3, stride=1, padding=1)),
+            )
         else:
-            return results[-1]
+            if self.up_or_down == 1:
+                self.conv1.add_module(
+                    "leakyrelu1",
+                    nn.LeakyReLU(0.2, False),
+                )
+                self.conv1.add_module(
+                    "upsample1",
+                    nn.Upsample(scale_factor=2, mode="nearest"),
+                )
+                self.conv1.add_module(
+                    "conv1",
+                    norm_layer(
+                        nn.Conv2d(fin, fmiddle, kernel_size=3, stride=1, padding=1),
+                    ),
+                )
+            else:
+                self.conv1.add_module(
+                    "leakyrelu1",
+                    nn.LeakyReLU(0.2, False),
+                )
+                self.conv1.add_module(
+                    "conv1",
+                    norm_layer(
+                        nn.Conv2d(fin, fmiddle, kernel_size=3, stride=1, padding=1),
+                    ),
+                )
+        self.conv2 = nn.Sequential()
+        self.conv2.add_module(
+            "leakyrelu2",
+            nn.LeakyReLU(0.2, False),
+        )
+        self.conv2.add_module(
+            "conv2",
+            norm_layer(nn.Conv2d(fmiddle, fout, kernel_size=3, stride=1, padding=1)),
+        )
+        if self.learned_shortcut:
+            self.conv_s = norm_layer(
+                nn.Conv2d(fin, fout, kernel_size=1, stride=1, padding=0)
+            )
+        if up_or_down == 1:
+            self.sample = nn.Upsample(scale_factor=2, mode="nearest")
+        if up_or_down == -1:
+            self.sample = nn.AvgPool2d(kernel_size=2)
+        if up_or_down == 0:
+            self.sample = nn.Identity()
+
+    def shortcut(self, x):
+        if self.first:
+            if self.up_or_down == -1:
+                x = self.sample(x)
+            if self.learned_shortcut:
+                x = self.conv_s(x)
+            x_s = x
+        else:
+            if self.up_or_down == 1:
+                x = self.sample(x)
+            if self.learned_shortcut:
+                x = self.conv_s(x)
+            if self.up_or_down == -1:
+                x = self.sample(x)
+            x_s = x
+        return x_s
+
+    def execute(self, x):
+        x_s = self.shortcut(x)
+        dx = self.conv1(x)
+        dx = self.conv2(dx)
+        if self.up_or_down == -1:
+            dx = self.sample(dx)
+        out = x_s + dx
+        return out

@@ -8,22 +8,22 @@ from jittor import init
 from jittor import nn
 from jittor import models
 import jittor.transform as transform
-from models.networks.normalization import SPADE
+from models.networks.normalization import OASIS
 from models.networks.spectral_norm import spectral_norm
 
 
-# ResNet block that uses SPADE.
+# ResNet block that uses OASIS.
 # It differs from the ResNet block of pix2pixHD in that
 # it takes in the segmentation map as input, learns the skip connection if necessary,
 # and applies normalization first and then convolution.
 # This architecture seemed like a standard architecture for unconditional or
 # class-conditional GAN architecture using residual block.
 # The code was inspired from https://github.com/LMescheder/GAN_stability.
-class SPADEResnetBlock(nn.Module):
+class OASISResnetBlock(nn.Module):
     def __init__(self, fin, fout, opt):
         super().__init__()
         # Attributes
-        self.learned_shortcut = (fin != fout)
+        self.learned_shortcut = fin != fout
         fmiddle = min(fin, fout)
 
         # create conv layers
@@ -33,20 +33,20 @@ class SPADEResnetBlock(nn.Module):
             self.conv_s = nn.Conv2d(fin, fout, kernel_size=1, bias=False)
 
         # apply spectral norm if specified
-        if 'spectral' in opt.norm_G:
+        if "spectral" in opt.norm_G:
             self.conv_0 = spectral_norm(self.conv_0)
             self.conv_1 = spectral_norm(self.conv_1)
             if self.learned_shortcut:
                 self.conv_s = spectral_norm(self.conv_s)
 
         # define normalization layers
-        spade_config_str = opt.norm_G.replace('spectral', '')
-        self.norm_0 = SPADE(spade_config_str, fin, opt.semantic_nc)
-        self.norm_1 = SPADE(spade_config_str, fmiddle, opt.semantic_nc)
+        oasis_config_str = opt.norm_G.replace("spectral", "")
+        self.norm_0 = OASIS(oasis_config_str, fin, opt.semantic_nc)
+        self.norm_1 = OASIS(oasis_config_str, fmiddle, opt.semantic_nc)
         if self.learned_shortcut:
-            self.norm_s = SPADE(spade_config_str, fin, opt.semantic_nc)
+            self.norm_s = OASIS(oasis_config_str, fin, opt.semantic_nc)
 
-    # note the resnet block with SPADE also takes in |seg|,
+    # note the resnet block with OASIS also takes in |seg|,
     # the semantic segmentation map as input
     def execute(self, x, seg):
         x_s = self.shortcut(x, seg)
@@ -81,7 +81,7 @@ class ResnetBlock(nn.Module):
             norm_layer(nn.Conv2d(dim, dim, kernel_size=kernel_size)),
             activation,
             nn.ReflectionPad2d(pw),
-            norm_layer(nn.Conv2d(dim, dim, kernel_size=kernel_size))
+            norm_layer(nn.Conv2d(dim, dim, kernel_size=kernel_size)),
         )
 
     def execute(self, x):
